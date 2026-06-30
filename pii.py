@@ -39,9 +39,7 @@ def _get_shield():
     _shield_tried = True
     try:
         from cloakllm import Shield, ShieldConfig
-        _shield = Shield(ShieldConfig(
-            log_original_values=False,   # никогда не логируем исходный ПД
-        ))
+        _shield = Shield(ShieldConfig())
         logger.info("PII: cloakllm Shield инициализирован (NER-маскировка ФИО активна).")
     except ImportError:
         logger.warning(
