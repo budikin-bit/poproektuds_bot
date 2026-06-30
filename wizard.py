@@ -1,7 +1,7 @@
 import logging
 import unicodedata
 from config import MASK_PII
-from pii import mask_pii
+from pii import mask_pii_for_field
 from session_manager import get_session, mutate_session
 
 logger = logging.getLogger(__name__)
@@ -184,7 +184,7 @@ def process_answer(user_id: str, answer: str):
         )
 
     # Тяжёлая операция — ВНЕ db.lock (см. docstring).
-    masked = mask_pii(clean) if MASK_PII else clean
+    masked = mask_pii_for_field(clean, q_id) if MASK_PII else clean
 
     def _apply(s):
         # Перечитываем состояние уже под db.lock — на случай гонок.

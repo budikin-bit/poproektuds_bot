@@ -1,12 +1,21 @@
 """Маскировка персональных данных (152-ФЗ) перед записью в БД и отправкой в LLM.
-Слой 1: regex — email, телефоны РФ, СНИЛС, ИНН, паспорт, карты.
-Слой 2: cloakllm Shield (spaCy NER) — ФИО, организации, геолокации.
-Если cloakllm недоступен — работает только regex, предупреждение выводится 1 раз.
+
+Два режима:
+  mask_pii(text)          — только regex (email, телефон, СНИЛС, ИНН, паспорт, карта).
+                            Используется для полей с географией/названиями, чтобы NER
+                            не подменял топонимы и аббревиатуры токенами.
+  mask_pii_full(text)     — regex + cloakllm NER (PERSON, ORG, GPE).
+                            Используется только для полей, где ожидаются реальные ФИО.
+
+В wizard.py поля разделены на два типа (см. PII_FULL_FIELDS).
 """
 import re
 import logging
 
 logger = logging.getLogger(__name__)
+
+# ── Поля, для которых включается NER (могут содержать реальные ФИО) ──
+PII_FULL_FIELDS = {"audience", "age_features", "existing_data"}
 
 # ── Regex-правила ──
 _EMAIL_RE    = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -53,31 +62,47 @@ def _get_shield():
     return _shield
 
 
-def mask_pii(text: str) -> str:
-    """Замаскировать ПД. Идемпотентно: уже подставленные [TOKEN] не ломаются."""
-    if not text:
-        return text
-
-    # Слой 1: regex (быстро, детерминированно)
+def _regex_mask(text: str) -> str:
     for rx, repl in _RULES:
         text = rx.sub(repl, text)
+    return text
 
-    # Слой 2: cloakllm NER (ФИО, организации, геолокации)
+
+def mask_pii(text: str) -> str:
+    """Только regex — для полей с географией и названиями.
+    Не трогает топонимы, аббревиатуры, названия организаций.
+    """
+    if not text:
+        return text
+    return _regex_mask(text)
+
+
+def mask_pii_full(text: str) -> str:
+    """Regex + NER — для полей, где ожидаются реальные ФИО (audience, existing_data и т.п.)."""
+    if not text:
+        return text
+    text = _regex_mask(text)
     shield = _get_shield()
     if shield is not None:
         try:
             cloaked, _ = shield.sanitize(text)
             text = cloaked
         except Exception:
-            logger.exception("PII: ошибка при вызове Shield.sanitize, используется regex-результат")
-
+            logger.exception("PII: ошибка Shield.sanitize, используется regex-результат")
     return text
 
 
+def mask_pii_for_field(text: str, field_id: str) -> str:
+    """Выбирает режим маскировки в зависимости от поля wizard."""
+    if field_id in PII_FULL_FIELDS:
+        return mask_pii_full(text)
+    return mask_pii(text)
+
+
 def contains_pii(text: str) -> bool:
-    return bool(text) and mask_pii(text) != text
+    return bool(text) and mask_pii_full(text) != text
 
 
 def warmup() -> None:
-    """Предзагрузка Shield на старте процесса (избегает задержки при первом вызове)."""
+    """Предзагрузка Shield на старте процесса."""
     _get_shield()
