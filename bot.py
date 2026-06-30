@@ -126,7 +126,11 @@ async def _check_access(event, chat_id, user_id) -> bool:
         except Exception:
             pass
         return False
-    if user_id not in ALLOWED_USER_IDS:
+    # Разрешаем доступ, если chat_id ИЛИ user_id есть в списке.
+    # В MAX для личных чатов chat_id == идентификатор пользователя,
+    # поэтому достаточно указать любое из двух значений в ALLOWED_USER_IDS.
+    allowed = ALLOWED_USER_IDS
+    if str(chat_id) not in allowed and user_id not in allowed:
         logger.info("Доступ запрещён для user_id=%s (chat_id=%s)", user_id, chat_id)
         try:
             await bot.send_message(
