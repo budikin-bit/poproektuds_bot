@@ -5,5 +5,6 @@ fpdf2
 httpx
 cloakllm
 spacy
+click
 pytz
 anthropic
