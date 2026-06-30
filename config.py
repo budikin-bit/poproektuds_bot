@@ -9,7 +9,7 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 
 # ---------- OpenModel (Anthropic-совместимый шлюз) ----------
 OPENMODEL_API_KEY = os.getenv("OPENMODEL_API_KEY")
-OPENMODEL_BASE_URL = os.getenv("OPENMODEL_BASE_URL", "https://api.openmodel.ai/v1")
+OPENMODEL_BASE_URL = os.getenv("OPENMODEL_BASE_URL", "https://api.openmodel.ai")
 MODEL = os.getenv("MODEL", "deepseek-v4-flash")
 
 # Параметры генерации
