@@ -14,6 +14,7 @@ import db
 import pii
 from config import (
     MAX_BOT_TOKEN, SYSTEM_PROMPT, ANALYSIS_BLOCKS, LLM_TIMEOUT, MASK_PII,
+    ALLOWED_USER_IDS,
 )
 from session_manager import get_session, update_session, reset_session
 from wizard import (
@@ -94,6 +95,48 @@ def _restart_keyboard():
     kb = InlineKeyboardBuilder()
     kb.row(CallbackButton(text="🔄 Начать заново", payload="restart"))
     return kb.as_markup()
+
+
+def _extract_user_id(event) -> str | None:
+    """Достаёт user_id из разных типов событий maxapi."""
+    for attr_path in ("user_id", "from_user.user_id", "user.user_id", "sender.user_id"):
+        obj = event
+        try:
+            for part in attr_path.split("."):
+                obj = getattr(obj, part)
+            if obj is not None:
+                return str(obj)
+        except AttributeError:
+            continue
+    return None
+
+
+async def _check_access(event, chat_id, user_id) -> bool:
+    """True — доступ разрешён. False — отказано (с отправкой сообщения)."""
+    if not ALLOWED_USER_IDS:
+        logger.warning(
+            "ALLOWED_USER_IDS пуст — доступ закрыт для всех. "
+            "Задайте переменную окружения, чтобы разрешить себе пользоваться ботом."
+        )
+        return False
+    if user_id is None:
+        logger.warning("Не удалось определить user_id для chat_id=%s — доступ закрыт", chat_id)
+        try:
+            await bot.send_message(chat_id=chat_id, text="⛔ Доступ ограничен.")
+        except Exception:
+            pass
+        return False
+    if user_id not in ALLOWED_USER_IDS:
+        logger.info("Доступ запрещён для user_id=%s (chat_id=%s)", user_id, chat_id)
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⛔ Этот бот доступен только ограниченному кругу пользователей.",
+            )
+        except Exception:
+            pass
+        return False
+    return True
 
 
 async def send_text_parts(chat_id, full_response):
@@ -274,6 +317,9 @@ async def run_analysis(chat_id):
 
 @dp.bot_started()
 async def on_bot_started(event: BotStarted):
+    user_id = _extract_user_id(event)
+    if not await _check_access(event, event.chat_id, user_id):
+        return
     reset_session(event.chat_id)
     await bot.send_message(
         chat_id=event.chat_id,
@@ -290,10 +336,13 @@ async def on_bot_started(event: BotStarted):
 async def handle_text(event: MessageCreated):
     chat_id = None
     try:
-        chat_id, _ = event.get_ids()
+        chat_id, user_id = event.get_ids()
         body = event.message.body
         text = body.text if body else None
         logger.info("Получено сообщение от %s: %r", chat_id, text)
+
+        if not await _check_access(event, chat_id, str(user_id) if user_id is not None else None):
+            return
 
         if not text:
             logger.info("Пустое сообщение, игнорируем")
@@ -355,9 +404,12 @@ async def handle_text(event: MessageCreated):
 @dp.message_callback()
 async def on_callback(event: MessageCallback):
     try:
-        chat_id, _ = event.get_ids()
+        chat_id, user_id = event.get_ids()
         payload = event.callback.payload
         logger.info("Callback from %s: %s", chat_id, payload)
+
+        if not await _check_access(event, chat_id, str(user_id) if user_id is not None else None):
+            return
 
         if payload == "restart":
             await event.answer(

@@ -7,6 +7,14 @@ load_dotenv()
 # ---------- Токен бота ----------
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 
+# ---------- Контроль доступа ----------
+# Список user_id, которым разрешено пользоваться ботом (через запятую).
+# Если пусто — бот закрыт для всех (безопасный дефолт, чтобы не забыть включить).
+_allowed_raw = os.getenv("ALLOWED_USER_IDS", "")
+ALLOWED_USER_IDS = {
+    item.strip() for item in _allowed_raw.split(",") if item.strip()
+}
+
 # ---------- OpenModel (Anthropic-совместимый шлюз) ----------
 OPENMODEL_API_KEY = os.getenv("OPENMODEL_API_KEY")
 OPENMODEL_BASE_URL = os.getenv("OPENMODEL_BASE_URL", "https://api.openmodel.ai")
