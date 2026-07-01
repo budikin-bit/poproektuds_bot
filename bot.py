@@ -324,7 +324,9 @@ async def run_analysis(chat_id):
             chat_id=chat_id,
             text="✅ Экспресс-анализ завершён.",
         )
-        update_session(chat_id, finished=True)
+        # update_session(finished=True) здесь НЕ нужен: wizard уже выставил
+        # finished при завершении опроса. Повторная запись после долгого
+        # анализа могла бы затереть состояние сессии, начатой заново.
 
         # Дисклеймер о том, что это не готовый текст заявки
         await bot.send_message(
@@ -390,6 +392,16 @@ async def handle_text(event: MessageCreated):
 
         if text.strip().lower() == "/start":
             logger.info("Команда /start от %s", chat_id)
+            # Пока идёт анализ, рестарт запрещён: reset_session создал бы
+            # новую сессию, которую завершение старого анализа могло бы
+            # пометить finished посреди опроса.
+            if chat_id in _running_analysis:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="⏳ Сейчас выполняется анализ — дождитесь результата, "
+                         "после этого можно будет начать заново.",
+                )
+                return
             async with _chat_lock(chat_id):
                 await _start_survey(chat_id)
             return
@@ -451,6 +463,14 @@ async def on_callback(event: MessageCallback):
             return
 
         if payload == "restart":
+            # Пока идёт анализ, рестарт запрещён (см. комментарий в handle_text).
+            if chat_id in _running_analysis:
+                await event.answer(
+                    new_text="⏳ Анализ ещё выполняется — дождитесь результата.",
+                    attachments=[],
+                    raise_if_not_exists=False,
+                )
+                return
             await event.answer(
                 new_text="🔄 Начинаем новый опрос!", attachments=[],
                 raise_if_not_exists=False,
