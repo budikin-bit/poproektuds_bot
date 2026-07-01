@@ -185,7 +185,9 @@ def process_answer(user_id: str, answer: str):
 
     # Тяжёлая операция — ВНЕ db.lock (см. docstring).
     masked = mask_pii_for_field(clean, q_id) if MASK_PII else clean
-
+    if MASK_PII:
+        mode = "full+NER" if q_id in PII_FULL_FIELDS else "regex-only"
+        logger.info("PII mask_mode=%s field=%s", mode, q_id)
     def _apply(s):
         # Перечитываем состояние уже под db.lock — на случай гонок.
         st = s.get("step", 0)
