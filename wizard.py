@@ -1,7 +1,7 @@
 import logging
 import unicodedata
 from config import MASK_PII
-from pii import mask_pii_for_field
+from pii import mask_pii_for_field, PII_FULL_FIELDS
 from session_manager import get_session, mutate_session
 
 logger = logging.getLogger(__name__)
