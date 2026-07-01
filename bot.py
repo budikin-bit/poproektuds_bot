@@ -33,6 +33,30 @@ except ImportError:
     logging.warning("PDF-генерация отключена: модуль не найден")
 
 
+class _PiiLogFilter(logging.Filter):
+    """Страховочный фильтр: regex-маскировка ПД (email, телефоны, паспорта,
+    СНИЛС, карты, ИНН) во ВСЕХ записях лога, включая логи библиотек.
+
+    Это защита от будущих регрессий, а не замена правилу «не логировать
+    пользовательский текст»: NER здесь не запускается (слишком дорого на
+    каждую строку), поэтому ФИО фильтр НЕ ловит.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.msg, str):
+                record.msg = pii.mask_pii(record.msg)
+            if record.args:
+                record.args = tuple(
+                    pii.mask_pii(a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+        except Exception:
+            # Логирование не должно падать из-за фильтра.
+            pass
+        return True
+
+
 def _setup_logging():
     logging.basicConfig(
         level=logging.INFO,
@@ -47,6 +71,10 @@ def _setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
     logging.getLogger().addHandler(fh)
+    # Фильтры логгера не наследуются обработчиками — вешаем на каждый handler.
+    pii_filter = _PiiLogFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(pii_filter)
 
 
 _setup_logging()
@@ -343,7 +371,12 @@ async def handle_text(event: MessageCreated):
         chat_id, user_id = event.get_ids()
         body = event.message.body
         text = body.text if body else None
-        logger.info("Получено сообщение от %s: %r", chat_id, text)
+        # ВАЖНО (152-ФЗ): текст пользователя НЕ логируем — он может содержать
+        # ПД до маскировки. Пишем только факт получения и длину.
+        logger.info(
+            "Получено сообщение от %s: %d символов",
+            chat_id, len(text) if text else 0,
+        )
 
         if not await _check_access(event, chat_id, str(user_id) if user_id is not None else None):
             return
@@ -410,7 +443,9 @@ async def on_callback(event: MessageCallback):
     try:
         chat_id, user_id = event.get_ids()
         payload = event.callback.payload
-        logger.info("Callback from %s: %s", chat_id, payload)
+        # Payload может быть произвольным (handle_callback трактует его как
+        # ответ пользователя) — логируем только длину, не содержимое.
+        logger.info("Callback from %s: %d символов", chat_id, len(payload or ""))
 
         if not await _check_access(event, chat_id, str(user_id) if user_id is not None else None):
             return
