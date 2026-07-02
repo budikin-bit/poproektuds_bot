@@ -34,6 +34,10 @@ ENV/
 .env
 .env.local
 .env.*.local
+# Сертификаты/ключи (если появятся клиентские TLS)
+*.crt
+*.key
+*.pem
 
 # Database files (SQLite)
 *.db
@@ -42,7 +46,6 @@ ENV/
 *.db-shm
 *.db-wal
 *.db-journal
-*.crt
 
 
 # Logs

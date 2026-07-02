@@ -39,5 +39,24 @@ TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Europe/Moscow"))
 
 # ---------- Системный промпт (из файла) ----------
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "system_prompt.md")
-with open(_PROMPT_PATH, encoding="utf-8") as _f:
-    SYSTEM_PROMPT = _f.read().strip()
+try:
+    with open(_PROMPT_PATH, encoding="utf-8") as _f:
+        SYSTEM_PROMPT = _f.read().strip()
+except OSError as _e:
+    import logging as _logging
+    _logging.getLogger(__name__).critical(
+        "Не удалось прочитать системный промпт: %s (%s). "
+        "Создайте файл prompts/system_prompt.md рядом с config.py — "
+        "без него бот не может формировать анализ. Останавливаюсь.",
+        _PROMPT_PATH, _e,
+    )
+    raise SystemExit(1)
+
+if not SYSTEM_PROMPT:
+    import logging as _logging
+    _logging.getLogger(__name__).critical(
+        "Файл системного промпта пуст: %s. Заполните его — "
+        "без промпта бот не может формировать анализ. Останавливаюсь.",
+        _PROMPT_PATH,
+    )
+    raise SystemExit(1)

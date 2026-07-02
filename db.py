@@ -8,7 +8,6 @@ import sys
 import logging
 import sqlite3
 import threading
-from contextlib import contextmanager
 from config import DB_PATH, ALLOW_MEMORY_STORAGE
 
 logger = logging.getLogger(__name__)
@@ -23,14 +22,15 @@ def _init_schema(conn):
         "(key TEXT PRIMARY KEY, data TEXT, ts REAL)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_ts ON sessions(ts)")
-    conn.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS daily_limits "
-        "(day TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0)"
-    )
+    # consents — задел под фиксацию согласий на обработку ПД (152-ФЗ);
+    # кодом пока не используется, но схему держим готовой.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS consents "
         "(chat_id TEXT PRIMARY KEY, version TEXT, ts REAL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS daily_limits "
+        "(day TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0)"
     )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS processed_events "
@@ -83,22 +83,6 @@ else:
 
 def conn():
     return _conn
-
-
-@contextmanager
-def transaction():
-    c = _conn
-    if c is None:
-        with lock:
-            yield None
-        return
-    with lock:
-        try:
-            yield c
-            c.commit()
-        except Exception:
-            c.rollback()
-            raise
 
 
 def close():

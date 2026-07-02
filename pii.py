@@ -111,10 +111,6 @@ def mask_pii_for_field(text: str, field_id: str) -> str:
     return mask_pii(text)
 
 
-def contains_pii(text: str) -> bool:
-    return bool(text) and mask_pii_full(text) != text
-
-
 def warmup() -> None:
     """Предзагрузка на старте процесса: конструируем Shield И выполняем
     холостой sanitize. Конструктор Shield не загружает NER-пайплайн —

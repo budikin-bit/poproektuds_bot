@@ -168,7 +168,7 @@ async def _non_stream_call(
 
 def split_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list[str]:
     """Разбивает текст на части строго меньше max_len."""
-    if len(text) < max_len:
+    if len(text) <= max_len:
         return [text]
 
     parts = []

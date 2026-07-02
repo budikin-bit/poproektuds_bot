@@ -148,7 +148,7 @@ def get_keyboard_for_step(step: int):
 def process_answer(user_id: str, answer: str):
     """
     Обработать ответ. (None, None) — переходим к анализу.
-    ВАЖНО: тяжёлая маскировка ПД (natasha-NER в mask_pii) выполняется ВНЕ
+    ВАЖНО: тяжёлая маскировка ПД (cloakllm-NER в mask_pii_full) выполняется ВНЕ
     db.lock — иначе на время NER блокируется единый замок БД для всех чатов.
     Корректность read-modify-write обеспечивается:
       • per-chat сериализацией в bot._chat_lock(chat_id) (один ответ за раз),
