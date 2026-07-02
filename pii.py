@@ -125,7 +125,21 @@ def warmup() -> None:
     shield = _get_shield()
     if shield is not None:
         try:
-            shield.sanitize("Прогрев пайплайна: Иван Иванович, Москва.")
-            logger.info("PII: NER-пайплайн прогрет холостым sanitize.")
+            cloaked, _ = shield.sanitize(
+                "Прогрев пайплайна: Иван Иванович, Москва."
+            )
+            if "Иван" in cloaked:
+                logger.warning(
+                    "PII: САМОПРОВЕРКА ПРОВАЛЕНА — тестовое ФИО не "
+                    "замаскировано NER-ом. Вероятно, не установлена русская "
+                    "модель (ru_core_news_sm) и cloakllm работает на "
+                    "английской. Маскировка русских ФИО фактически НЕ "
+                    "работает, полагаться можно только на regex-правила."
+                )
+            else:
+                logger.info(
+                    "PII: NER-пайплайн прогрет, тестовое ФИО замаскировано — "
+                    "самопроверка OK."
+                )
         except Exception:
             logger.exception("PII: ошибка холостого sanitize при прогреве")
