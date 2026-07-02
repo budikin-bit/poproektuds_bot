@@ -71,11 +71,13 @@ from maxapi.enums.upload_type import UploadType  # noqa: E402
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder  # noqa: E402
 
 import db  # noqa: E402
+import consents  # noqa: E402
 from config import (  # noqa: E402
     MAX_BOT_TOKEN, SYSTEM_PROMPT, ANALYSIS_BLOCKS, LLM_TIMEOUT, MASK_PII,
-    ALLOWED_USER_IDS,
+    ALLOWED_USER_IDS, DEVELOPER_INFO, SUPPORT_CONTACT, PRIVACY_URL, TERMS_URL,
+    CONSENT_VERSION,
 )
-from session_manager import get_session, update_session, reset_session  # noqa: E402
+from session_manager import get_session, update_session, reset_session, delete_session  # noqa: E402
 from wizard import (  # noqa: E402
     get_question_text, get_keyboard_for_step, process_answer,
     get_collected_data, handle_callback, TOTAL_STEPS,
@@ -212,6 +214,61 @@ def _restart_keyboard():
     kb = InlineKeyboardBuilder()
     kb.row(CallbackButton(text="🔄 Начать заново", payload="restart"))
     return kb.as_markup()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Онбординг, обязательная информация и удаление данных
+# (Требования MAX п. 2.1, 2.3; Правила п. 4.2, 4.4, 4.5)
+# ──────────────────────────────────────────────────────────────────────
+
+def _legal_text() -> str:
+    docs = []
+    if PRIVACY_URL:
+        docs.append(f"• Политика конфиденциальности: {PRIVACY_URL}")
+    if TERMS_URL:
+        docs.append(f"• Условия использования: {TERMS_URL}")
+    docs_block = "\n".join(docs) if docs else "⚠️ ссылки на документы не настроены (PRIVACY_URL/TERMS_URL в .env)"
+    return (
+        "📄 Информация о боте\n\n"
+        f"Разработчик: {DEVELOPER_INFO}\n"
+        f"Поддержка: {SUPPORT_CONTACT}\n\n"
+        f"Документы (версия {CONSENT_VERSION}):\n{docs_block}\n\n"
+        "Как обрабатываются данные: ваши ответы на вопросы анкеты проходят "
+        "автоматическую маскировку персональных данных, после чего "
+        "обработанный текст передаётся внешнему AI-сервису для формирования "
+        "анализа. Данные опроса хранятся не более 24 часов и удаляются "
+        "автоматически. Удалить их досрочно и отозвать согласие можно "
+        "командой /delete.\n\n"
+        "Команды: /start — начать опрос, /info — эта справка, "
+        "/delete — удалить данные."
+    )
+
+
+def _consent_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.row(CallbackButton(text="✅ Принимаю", payload="consent_accept"))
+    kb.row(CallbackButton(text="❌ Не принимаю", payload="consent_decline"))
+    return kb.as_markup()
+
+
+def _delete_confirm_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.row(CallbackButton(text="🗑 Да, удалить", payload="delete_confirm"))
+    kb.row(CallbackButton(text="Отмена", payload="delete_cancel"))
+    return kb.as_markup()
+
+
+async def _send_onboarding(chat_id):
+    """Экран согласия: обязательная информация + кнопки принятия."""
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            _legal_text()
+            + "\n\nНажимая «Принимаю», вы подтверждаете ознакомление и "
+            "согласие с указанными документами и порядком обработки данных."
+        ),
+        attachments=[_consent_keyboard()],
+    )
 
 
 def _extract_user_id(event) -> str | None:
@@ -444,13 +501,17 @@ async def on_bot_started(event: BotStarted):
     if not await _check_access(event, event.chat_id, user_id):
         return
     reset_session(event.chat_id)
+    if not consents.has_consent(event.chat_id):
+        await _send_onboarding(event.chat_id)
+        return
     await bot.send_message(
         chat_id=event.chat_id,
         text=(
             f"👋 Добро пожаловать в AI-эксперта по социальным проектам!\n\n"
             f"Я задам вам {TOTAL_STEPS} коротких вопросов.\n"
             "⚠️ Пожалуйста, не указывайте персональные данные (ФИО, телефоны).\n\n"
-            "Напишите /start."
+            "Напишите /start. Справка и документы — /info, "
+            "удаление данных — /delete."
         ),
     )
 
@@ -483,7 +544,44 @@ async def handle_text(event: MessageCreated):
             return
         claimed = True
 
-        if text.strip().lower() == "/start":
+        cmd = text.strip().lower()
+
+        # /info — обязательная информация, доступна всегда (Требования 2.1).
+        if cmd == "/info":
+            if consents.has_consent(chat_id):
+                await bot.send_message(chat_id=chat_id, text=_legal_text())
+            else:
+                await _send_onboarding(chat_id)
+            return
+
+        # /delete — удаление данных и отзыв согласия (Правила 4.5).
+        if cmd == "/delete":
+            if chat_id in _running_analysis:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="⏳ Сейчас выполняется анализ — дождитесь результата, "
+                         "после этого данные можно будет удалить.",
+                )
+                return
+            await bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "🗑 Удалить данные текущего опроса и отозвать согласие "
+                    "на обработку? Действие необратимо; для нового разбора "
+                    "потребуется заново принять условия."
+                ),
+                attachments=[_delete_confirm_keyboard()],
+            )
+            return
+
+        # Шлюз согласия: без принятой ТЕКУЩЕЙ версии документов работать
+        # нельзя (при обновлении CONSENT_VERSION сюда попадут и старые
+        # пользователи — попросим принять заново).
+        if not consents.has_consent(chat_id):
+            await _send_onboarding(chat_id)
+            return
+
+        if cmd == "/start":
             logger.info("Команда /start от %s", chat_id)
             # Пока идёт анализ, рестарт запрещён: reset_session создал бы
             # новую сессию, которую завершение старого анализа могло бы
@@ -564,6 +662,61 @@ async def on_callback(event: MessageCallback):
         logger.info("Callback from %s: %d символов", chat_id, len(payload or ""))
 
         if not await _check_access(event, chat_id, str(user_id) if user_id is not None else None):
+            return
+
+        if payload == "consent_accept":
+            consents.record_consent(chat_id)
+            await event.answer(
+                new_text="✅ Спасибо! Условия приняты. Начинаем опрос.",
+                attachments=[], raise_if_not_exists=False,
+            )
+            async with _chat_lock(chat_id):
+                await _start_survey(chat_id)
+            return
+
+        if payload == "consent_decline":
+            await event.answer(
+                new_text=(
+                    "Понимаю. Без согласия бот работать не может: анализ "
+                    "строится на переданных вами ответах. Если передумаете — "
+                    "напишите /start в любой момент."
+                ),
+                attachments=[], raise_if_not_exists=False,
+            )
+            return
+
+        if payload == "delete_confirm":
+            if chat_id in _running_analysis:
+                await event.answer(
+                    new_text="⏳ Анализ ещё выполняется — попробуйте после его завершения.",
+                    attachments=[], raise_if_not_exists=False,
+                )
+                return
+            delete_session(chat_id)
+            consents.revoke_consent(chat_id)
+            await event.answer(
+                new_text=(
+                    "✅ Данные опроса удалены, согласие отозвано.\n"
+                    "Чтобы воспользоваться ботом снова — /start."
+                ),
+                attachments=[], raise_if_not_exists=False,
+            )
+            return
+
+        if payload == "delete_cancel":
+            await event.answer(
+                new_text="Отменено. Данные не тронуты.",
+                attachments=[], raise_if_not_exists=False,
+            )
+            return
+
+        # Шлюз согласия для остальных действий (restart, ответы кнопками).
+        if not consents.has_consent(chat_id):
+            await event.answer(
+                new_text="Сначала нужно принять условия использования.",
+                attachments=[], raise_if_not_exists=False,
+            )
+            await _send_onboarding(chat_id)
             return
 
         if payload == "restart":

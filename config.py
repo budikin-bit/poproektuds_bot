@@ -37,6 +37,24 @@ ALLOW_MEMORY_STORAGE = os.getenv("ALLOW_MEMORY_STORAGE", "0").lower() in ("1", "
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "10"))             # бесплатных разборов в день
 TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Europe/Moscow"))
 
+# ---------- Юридическая информация и согласие ----------
+# Обязательные сведения (Требования MAX п. 2.1, Правила п. 4.4):
+# заполните в .env реальными данными разработчика.
+DEVELOPER_INFO = os.getenv(
+    "DEVELOPER_INFO",
+    "⚠️ не заполнено — укажите DEVELOPER_INFO в .env "
+    "(наименование/ФИО, адрес, регистрационные данные)",
+)
+SUPPORT_CONTACT = os.getenv(
+    "SUPPORT_CONTACT",
+    "⚠️ не заполнено — укажите SUPPORT_CONTACT в .env",
+)
+PRIVACY_URL = os.getenv("PRIVACY_URL", "")   # ссылка на политику конфиденциальности
+TERMS_URL = os.getenv("TERMS_URL", "")       # ссылка на условия использования
+# Версия документов. При изменении политики/условий поменяйте версию —
+# бот попросит пользователей принять документы заново.
+CONSENT_VERSION = os.getenv("CONSENT_VERSION", "2026-07-02")
+
 # ---------- Системный промпт (из файла) ----------
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "system_prompt.md")
 try:
