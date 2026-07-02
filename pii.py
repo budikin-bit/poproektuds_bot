@@ -11,6 +11,7 @@
 """
 import re
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +40,37 @@ _RULES = [
 # ── cloakllm Shield (ленивая инициализация) ──
 _shield = None
 _shield_tried = False
+_shield_init_lock = threading.Lock()
 
 
 def _get_shield():
+    """Потокобезопасно: параллельные to_thread из bot.py могли одновременно
+    пройти проверку _shield_tried и дважды инициализировать Shield
+    (двойная загрузка spacy-модели). Теперь — double-checked locking.
+    """
     global _shield, _shield_tried
     if _shield_tried:
         return _shield
-    _shield_tried = True
-    try:
-        from cloakllm import Shield, ShieldConfig
-        _shield = Shield(ShieldConfig())
-        logger.info("PII: cloakllm Shield инициализирован (NER-маскировка ФИО активна).")
-    except ImportError:
-        logger.warning(
-            "PII: пакет cloakllm не найден — ФИО маскироваться НЕ будут "
-            "(только regex). Установите cloakllm + python -m spacy download ru_core_news_sm."
-        )
-        _shield = None
-    except Exception as e:
-        logger.exception("PII: ошибка инициализации cloakllm Shield: %s", e)
-        _shield = None
+    with _shield_init_lock:
+        if _shield_tried:  # другой поток успел первым
+            return _shield
+        try:
+            from cloakllm import Shield, ShieldConfig
+            _shield = Shield(ShieldConfig())
+            logger.info("PII: cloakllm Shield инициализирован (NER-маскировка ФИО активна).")
+        except ImportError:
+            logger.warning(
+                "PII: пакет cloakllm не найден — ФИО маскироваться НЕ будут "
+                "(только regex). Установите cloakllm + python -m spacy download ru_core_news_sm."
+            )
+            _shield = None
+        except Exception as e:
+            logger.exception("PII: ошибка инициализации cloakllm Shield: %s", e)
+            _shield = None
+        finally:
+            # Флаг выставляем последним: пока он False, другие потоки ждут
+            # на замке и не увидят наполовину созданный Shield.
+            _shield_tried = True
     return _shield
 
 

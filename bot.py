@@ -2,35 +2,11 @@ import asyncio
 import time
 import logging
 import logging.handlers
-from maxapi import Bot, Dispatcher
-from maxapi.types import (
-    MessageCreated, BotStarted, MessageCallback, CallbackButton, InputMediaBuffer,
-)
-from maxapi.enums.parse_mode import ParseMode
-from maxapi.enums.upload_type import UploadType
-from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
-import db
+# pii не имеет project-зависимостей и ничего не логирует при импорте —
+# его можно (и нужно) импортировать до настройки логирования: он
+# используется фильтром ниже.
 import pii
-from config import (
-    MAX_BOT_TOKEN, SYSTEM_PROMPT, ANALYSIS_BLOCKS, LLM_TIMEOUT, MASK_PII,
-    ALLOWED_USER_IDS,
-)
-from session_manager import get_session, update_session, reset_session
-from wizard import (
-    get_question_text, get_keyboard_for_step, process_answer,
-    get_collected_data, handle_callback, TOTAL_STEPS,
-)
-from daily_limit import try_consume_free, refund_free
-from formatter import build_user_prompt, format_for_max
-from llm_client import call_llm_with_budget, split_message
-
-try:
-    from pdf_generator import generate_pdf_from_text
-    PDF_AVAILABLE = True
-except ImportError:
-    PDF_AVAILABLE = False
-    logging.warning("PDF-генерация отключена: модуль не найден")
 
 
 class _PiiLogFilter(logging.Filter):
@@ -71,25 +47,72 @@ def _setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
     logging.getLogger().addHandler(fh)
+    # fontTools при каждой генерации PDF пишет ~100 INFO-строк про глифы —
+    # оставляем от него только предупреждения и ошибки.
+    logging.getLogger("fontTools").setLevel(logging.WARNING)
     # Фильтры логгера не наследуются обработчиками — вешаем на каждый handler.
     pii_filter = _PiiLogFilter()
     for handler in logging.getLogger().handlers:
         handler.addFilter(pii_filter)
 
 
+# Настраиваем логирование ДО импорта остальных модулей проекта: db.py
+# пишет важные строки при импорте («SQLite-хранилище подключено», ошибки
+# открытия БД) — раньше они терялись, т.к. обработчики ещё не существовали.
 _setup_logging()
 logger = logging.getLogger(__name__)
+
+from maxapi import Bot, Dispatcher  # noqa: E402
+from maxapi.types import (  # noqa: E402
+    MessageCreated, BotStarted, MessageCallback, CallbackButton, InputMediaBuffer,
+)
+from maxapi.enums.parse_mode import ParseMode  # noqa: E402
+from maxapi.enums.upload_type import UploadType  # noqa: E402
+from maxapi.utils.inline_keyboard import InlineKeyboardBuilder  # noqa: E402
+
+import db  # noqa: E402
+from config import (  # noqa: E402
+    MAX_BOT_TOKEN, SYSTEM_PROMPT, ANALYSIS_BLOCKS, LLM_TIMEOUT, MASK_PII,
+    ALLOWED_USER_IDS,
+)
+from session_manager import get_session, update_session, reset_session  # noqa: E402
+from wizard import (  # noqa: E402
+    get_question_text, get_keyboard_for_step, process_answer,
+    get_collected_data, handle_callback, TOTAL_STEPS,
+)
+from daily_limit import try_consume_free, refund_free  # noqa: E402
+from formatter import build_user_prompt, format_for_max  # noqa: E402
+from llm_client import call_llm_with_budget, split_message  # noqa: E402
+
+try:
+    from pdf_generator import generate_pdf_from_text  # noqa: E402
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+    logging.warning("PDF-генерация отключена: модуль не найден")
+
 
 bot = Bot(token=MAX_BOT_TOKEN)
 dp = Dispatcher()
 
 _running_analysis: set = set()
 _chat_locks: dict = {}
+_MAX_CHAT_LOCKS = 1000  # потолок, после которого выбрасываем свободные локи
 
 
 def _chat_lock(chat_id) -> asyncio.Lock:
     lock = _chat_locks.get(chat_id)
     if lock is None:
+        if len(_chat_locks) >= _MAX_CHAT_LOCKS:
+            # Удаляем только незанятые локи. Безопасно, т.к. выполняется в
+            # event loop без await, а `async with _chat_lock(x)` захватывает
+            # лок сразу после получения, не уступая управление циклу, —
+            # окна, в котором чужая ссылка указывает на удалённый лок, нет.
+            for cid in [c for c, l in _chat_locks.items() if not l.locked()]:
+                del _chat_locks[cid]
+            logger.info(
+                "Очистка _chat_locks: осталось %d занятых", len(_chat_locks)
+            )
         lock = asyncio.Lock()
         _chat_locks[chat_id] = lock
     return lock
@@ -513,7 +536,12 @@ async def on_callback(event: MessageCallback):
 
 
 async def main():
-    # Удалён прогрев PII-моделей; маскировка будет выполняться по мере необходимости
+    # Прогрев NER-модели до приёма трафика: иначе первый ответ с полем
+    # из PII_FULL_FIELDS словит паузу в несколько секунд на загрузку spacy.
+    if MASK_PII:
+        logger.info("Прогрев PII-маскировки…")
+        await asyncio.to_thread(pii.warmup)
+        logger.info("Прогрев PII завершён")
     try:
         await dp.start_polling(bot)
     finally:

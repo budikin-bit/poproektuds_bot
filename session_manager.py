@@ -17,6 +17,7 @@ import db
 logger = logging.getLogger(__name__)
 
 SESSION_TTL_SECONDS = 24 * 60 * 60
+EVENTS_TTL_SECONDS = 24 * 60 * 60  # хранение event_id для дедупликации
 _MAX_CACHE = 5000  # потолок LRU-кэша в памяти
 
 _cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
@@ -97,6 +98,13 @@ def _purge_locked() -> None:
     c = db.conn()
     if c is not None:
         c.execute("DELETE FROM sessions WHERE ts < ?", (cutoff,))
+        # Заодно чистим таблицу дедупликации событий (bot._seen_event):
+        # без этого она растёт бесконечно. Суток хранения более чем
+        # достаточно — повторные доставки от MAX приходят в пределах минут.
+        c.execute(
+            "DELETE FROM processed_events WHERE ts < ?",
+            (time.time() - EVENTS_TTL_SECONDS,),
+        )
         c.commit()
     for k in [k for k, s in _cache.items() if s.get("ts", 0) < cutoff]:
         _cache.pop(k, None)
