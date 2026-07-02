@@ -193,7 +193,24 @@ def process_answer(user_id: str, answer: str):
         st = s.get("step", 0)
         if s.get("finished") or st >= TOTAL_STEPS:
             return None, None
-        s["data"][get_question_id(st)] = masked
+        if st != step:
+            # Шаг успел измениться между чтением и записью: masked посчитан
+            # для поля q_id и с режимом маскировки этого поля — писать его
+            # в поле шага st нельзя (не то поле + возможно не тот режим,
+            # т.е. риск незамаскированных ПД). Ответ отбрасываем и просим
+            # ответить на актуальный вопрос. Сейчас per-chat lock в bot.py
+            # делает эту ветку недостижимой — это страховка на будущее.
+            logger.warning(
+                "Гонка шагов у %s: ответ готовился для шага %s, актуальный %s — отброшен",
+                user_id, step, st,
+            )
+            return (
+                "⚠️ Похоже, сообщения пришли слишком быстро и наложились. "
+                "Ответьте, пожалуйста, на актуальный вопрос:\n\n"
+                + get_question_text(st),
+                None,
+            )
+        s["data"][q_id] = masked
         new_step = st + 1
         s["step"] = new_step
         if new_step >= TOTAL_STEPS:
