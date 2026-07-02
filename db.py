@@ -36,6 +36,15 @@ def _init_schema(conn):
         "CREATE TABLE IF NOT EXISTS processed_events "
         "(event_id TEXT PRIMARY KEY, ts REAL)"
     )
+    # Миграция (этап 3.2): колонка status ('processing' | 'done') для схемы
+    # дедупликации «пометить после обработки». Записи без статуса (старые)
+    # считаем 'done' — они уже были обработаны при старой схеме.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(processed_events)")}
+    if "status" not in cols:
+        conn.execute(
+            "ALTER TABLE processed_events "
+            "ADD COLUMN status TEXT NOT NULL DEFAULT 'done'"
+        )
     conn.commit()
 
 

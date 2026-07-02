@@ -118,28 +118,94 @@ def _chat_lock(chat_id) -> asyncio.Lock:
     return lock
 
 
-def _seen_event(event) -> bool:
+_PROCESSING_TTL = 600  # сек: старше — «processing» считается зависшим (процесс упал)
+
+
+def _event_id(event):
     eid = (
         getattr(getattr(event, "message", None), "body", None)
         and getattr(event.message.body, "mid", None)
     )
+    return str(eid) if eid else None
+
+
+def _claim_event(eid) -> bool:
+    """Атомарно занять событие. True — наше, обрабатываем; False — дубль
+    (уже обработано или прямо сейчас обрабатывается другим воркером).
+
+    Схема «пометить ПОСЛЕ обработки»: клейм ставит status='processing';
+    _finish_event переводит в 'done'; _release_event снимает клейм при
+    сбое, чтобы повторная доставка от MAX была обработана, а не потеряна.
+    Зависший 'processing' старше _PROCESSING_TTL можно перезанять.
+    """
     if not eid:
         logger.warning("Не удалось получить event_id, дубли не будут блокироваться")
-        return False
+        return True
     c = db.conn()
     if c is None:
         logger.warning("БД недоступна, дубли не блокируются")
-        return False
-    with db.lock:
-        cur = c.execute(
-            "INSERT OR IGNORE INTO processed_events(event_id, ts) VALUES(?, ?)",
-            (str(eid), time.time()),
-        )
-        c.commit()
-        is_duplicate = cur.rowcount == 0
-        if is_duplicate:
-            logger.info("Обнаружен дубль события %s, пропускаем", eid)
-        return is_duplicate
+        return True
+    now = time.time()
+    try:
+        with db.lock:
+            cur = c.execute(
+                "INSERT INTO processed_events(event_id, ts, status) "
+                "VALUES(?, ?, 'processing') "
+                "ON CONFLICT(event_id) DO UPDATE SET ts = excluded.ts, "
+                "status = 'processing' "
+                "WHERE processed_events.status = 'processing' "
+                "AND processed_events.ts < ?",
+                (eid, now, now - _PROCESSING_TTL),
+            )
+            c.commit()
+            claimed = cur.rowcount > 0
+            if not claimed:
+                logger.info("Дубль события %s — пропускаем", eid)
+            return claimed
+    except Exception:
+        # Учёт дублей не должен ронять обработчик: в худшем случае
+        # событие обработается повторно, это лучше потери сообщения.
+        logger.exception("Ошибка клейма события %s — обрабатываем без дедупликации", eid)
+        return True
+
+
+def _finish_event(eid) -> None:
+    """Пометить событие успешно обработанным."""
+    if not eid:
+        return
+    c = db.conn()
+    if c is None:
+        return
+    try:
+        with db.lock:
+            c.execute(
+                "UPDATE processed_events SET status = 'done', ts = ? "
+                "WHERE event_id = ?",
+                (time.time(), eid),
+            )
+            c.commit()
+    except Exception:
+        logger.exception("Ошибка фиксации события %s", eid)
+
+
+def _release_event(eid) -> None:
+    """Снять клейм после сбоя: повторная доставка события будет обработана."""
+    if not eid:
+        return
+    c = db.conn()
+    if c is None:
+        return
+    try:
+        with db.lock:
+            c.execute(
+                "DELETE FROM processed_events "
+                "WHERE event_id = ? AND status = 'processing'",
+                (eid,),
+            )
+            c.commit()
+            logger.info("Клейм события %s снят — повторная доставка будет обработана", eid)
+    except Exception:
+        logger.exception("Ошибка снятия клейма события %s", eid)
 
 
 def _restart_keyboard():
@@ -392,6 +458,8 @@ async def on_bot_started(event: BotStarted):
 @dp.message_created()
 async def handle_text(event: MessageCreated):
     chat_id = None
+    eid = None
+    claimed = False
     try:
         chat_id, user_id = event.get_ids()
         body = event.message.body
@@ -410,8 +478,10 @@ async def handle_text(event: MessageCreated):
             logger.info("Пустое сообщение, игнорируем")
             return
 
-        if _seen_event(event):
+        eid = _event_id(event)
+        if not _claim_event(eid):
             return
+        claimed = True
 
         if text.strip().lower() == "/start":
             logger.info("Команда /start от %s", chat_id)
@@ -459,6 +529,11 @@ async def handle_text(event: MessageCreated):
 
     except Exception:
         logger.exception("КРИТИЧЕСКАЯ ОШИБКА в handle_text для chat_id=%s", chat_id)
+        if claimed:
+            # Снимаем клейм ДО уведомления: повторная доставка события
+            # от MAX будет обработана заново, сообщение не потеряется.
+            _release_event(eid)
+            claimed = False
         try:
             if chat_id:
                 await bot.send_message(
@@ -471,6 +546,12 @@ async def handle_text(event: MessageCreated):
                 )
         except Exception:
             pass
+    finally:
+        # Сюда попадают все успешные пути, включая ранние return
+        # (/start, «опрос завершён» и т.п.). При исключении claimed уже
+        # сброшен в except — двойной записи не будет.
+        if claimed:
+            _finish_event(eid)
 
 
 @dp.message_callback()
