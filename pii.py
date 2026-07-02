@@ -116,5 +116,16 @@ def contains_pii(text: str) -> bool:
 
 
 def warmup() -> None:
-    """Предзагрузка Shield на старте процесса."""
-    _get_shield()
+    """Предзагрузка на старте процесса: конструируем Shield И выполняем
+    холостой sanitize. Конструктор Shield не загружает NER-пайплайн —
+    spacy-модель подтягивается лениво при первом вызове sanitize(),
+    и без холостого вызова первый пользователь ждал ~5 секунд
+    (подтверждено логами) даже при инициализированном Shield.
+    """
+    shield = _get_shield()
+    if shield is not None:
+        try:
+            shield.sanitize("Прогрев пайплайна: Иван Иванович, Москва.")
+            logger.info("PII: NER-пайплайн прогрет холостым sanitize.")
+        except Exception:
+            logger.exception("PII: ошибка холостого sanitize при прогреве")
